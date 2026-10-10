@@ -11,6 +11,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIRMWARE="$SELF_DIR/firmware/glyph-c6-blink.merged.bin"
 PORT=""
 MODE="auto"          # auto | manual  (how we got the chip into download mode)
+ESPTOOL_LOG=""       # full esptool output is saved here
 
 # ----------------------------- colors -----------------------------
 if [ -t 1 ]; then
@@ -113,7 +114,86 @@ check_busy() {
 # Runs the esptool chip-id test. Extra args (e.g. --before no_reset)
 # are passed straight to esptool. Returns esptool's exit status.
 connect_test() {
-  "$ESPTOOL" --port "$PORT" --chip esp32c6 "$@" "$CMD_CHIP_ID"
+  "$ESPTOOL" --port "$PORT" --chip esp32c6 "$@" "$CMD_CHIP_ID" 2>&1 | tee "$ESPTOOL_LOG"
+  return "${PIPESTATUS[0]}"
+}
+
+# -------------------------- diagnostics ----------------------------
+# Reads the last esptool run from ESPTOOL_LOG and explains the failure
+# in plain language instead of leaving the user with raw error text.
+analyze_failure() {
+  echo ""
+  info "What esptool said:"
+  grep -E "fatal error|error" "$ESPTOOL_LOG" | tail -3 | sed 's/^/    /'
+  echo ""
+  if grep -qi "could not open.*port\|no such file\|busy" "$ESPTOOL_LOG"; then
+    info "This means: the port couldn't be opened — it vanished, or another program holds it."
+    info "Fix: close Serial Monitor / screen sessions, replug the board."
+  elif grep -qi "no serial data received\|failed to connect" "$ESPTOOL_LOG"; then
+    info "This means: the chip did not answer — it is NOT in download mode, or the port is not the board."
+    info "Fix: the BOOT dance, and confirm the port really belongs to the board."
+  elif grep -qi "unsupported detection protocol\|unexpected chip" "$ESPTOOL_LOG"; then
+    info "This means: the device on this port is NOT an ESP32-C6 (wrong device, or the board isn't enumerating)."
+    info "Fix: unplug other USB devices; check cable and board power."
+  fi
+}
+
+# Checks the USB device tree for an Espressif device (vendor 0x303a).
+check_usb_tree() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if system_profiler SPUSBDataType 2>/dev/null | grep -qi "303a"; then
+      ok "Espressif device found in the USB tree — the board is enumerating."
+    else
+      warn "No Espressif (vendor 0x303a) device in the USB tree — the port found above may belong to another device, or the board isn't enumerating (cable/power problem)."
+    fi
+  else
+    if command -v lsusb >/dev/null 2>&1; then
+      if lsusb 2>/dev/null | grep -qi "303a"; then
+        ok "Espressif device found on the USB bus — the board is enumerating."
+      else
+        warn "No Espressif (vendor 0x303a) device on the USB bus — the port found above may belong to another device, or the board isn't enumerating (cable/power problem)."
+      fi
+    fi
+  fi
+}
+
+# Definitive identity test: if unplugging the board makes the port
+# disappear, the port IS the board.
+identity_test() {
+  local ans now
+  echo ""
+  info "Identity check — is the port really your board?"
+  printf '%sUnplug the boards USB cable now, wait 2 seconds, then press Enter (q = skip): %s' "$YELLOW" "$RESET"
+  read -r ans || { echo; return 0; }
+  [ "$ans" = "q" ] && return 0
+  if [ "$(uname -s)" = "Darwin" ]; then
+    now="$(ls /dev/cu.usbmodem* 2>/dev/null)"
+  else
+    now="$(ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null)"
+  fi
+  if printf '%s\n' "$now" | grep -qx "$PORT"; then
+    bad "The port $PORT is STILL there after unplugging — it is NOT your board."
+    warn "Your board is not enumerating. Check: data cable (not charge-only), USB port, board power switch."
+    printf '%sPress Enter to continue anyway (q = quit): %s' "$YELLOW" "$RESET"
+    read -r ans || { echo; return 0; }
+    [ "$ans" = "q" ] && exit 1
+  else
+    ok "$PORT disappeared when you unplugged — that IS your board."
+    printf '%sPlug the board back in, then press Enter: %s' "$YELLOW" "$RESET"
+    read -r _ || true
+    # wait for the port to come back (the name may have changed)
+    local i
+    for i in $(seq 1 15); do
+      if [ "$(uname -s)" = "Darwin" ]; then
+        now="$(ls /dev/cu.usbmodem* 2>/dev/null)"
+      else
+        now="$(ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null)"
+      fi
+      printf '%s\n' "$now" | grep -qx "$PORT" && break
+      sleep 1
+    done
+    refresh_port || return 0
+  fi
 }
 
 dance_prompt() {
@@ -138,6 +218,7 @@ manual_connect() {
       return 0
     fi
     bad "No response from the chip."
+    analyze_failure
   done
   return 1
 }
@@ -216,6 +297,8 @@ main() {
     CMD_CHIP_ID="chip-id";  CMD_WRITE="write-flash"   # esptool 5.x names
   fi
   info "esptool $vline"
+  ESPTOOL_LOG="$(mktemp /tmp/glyph-diag.XXXXXX)"
+  info "Full esptool output will be saved to: $ESPTOOL_LOG"
 
   # 2. port
   echo ""
@@ -224,6 +307,8 @@ main() {
   ok "Port: $PORT"
   info "If the onboard LED is blinking right now, this port is definitely your board."
   info "If it's NOT blinking, the chip may be in download mode already — the script can still connect to it."
+  check_usb_tree
+  identity_test
   check_busy
 
   # 3. connect
@@ -233,6 +318,7 @@ main() {
     ok "Connected automatically! esptool is talking to the chip."
   else
     warn "Automatic reset did not work — common on macOS and USB hubs, nothing is broken."
+    analyze_failure
     MODE="manual"
     if manual_connect; then
       ok "Connected via BOOT dance!"
@@ -242,10 +328,12 @@ main() {
       if nuclear_connect; then
         ok "Connected via the power-on trick!"
       else
+        analyze_failure
         bad "Still no response. Possible causes:"
         echo "   • the port belongs to a different device (unplug it — if the port disappears, it was the board)"
         echo "   • charge-only cable — swap for a data cable"
         echo "   • USB hub in the way — plug directly into the computer"
+        info "Share the full log if you need help: $ESPTOOL_LOG"
         exit 1
       fi
     fi

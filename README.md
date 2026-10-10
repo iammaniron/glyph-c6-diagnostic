@@ -18,9 +18,19 @@ Answer the prompts. That's it.
 1. **Finds esptool** — on your PATH, or the copy bundled with Arduino IDE
    (both `~/Library/Arduino15` on macOS and `~/.arduino15` on Linux are checked)
 2. **Finds your board's port** — `/dev/cu.usbmodem*` on macOS, `/dev/ttyACM*` on Linux
-3. **Tries esptool's automatic reset** (works on most Linux setups)
-4. **If that fails, walks you through the BOOT dance** step by step
-5. **Flashes the blink firmware** (optional, Y/n prompt)
+3. **Checks the USB tree** for an actual Espressif device (vendor `0x303a`) — if your
+   port was made by some other gadget, you'll know
+4. **Identity check** — asks you to unplug the board: if the port disappears, it's
+   definitely your board
+5. **Tries esptool's automatic reset** (works on most Linux/Windows setups)
+6. **Explains every failure in plain language** — esptool's error text is translated
+   into what's actually wrong and how to fix it ("no serial data received" → not in
+   download mode → BOOT dance; "could not open port" → busy/vanished, etc.)
+7. **If auto-reset fails, walks you through the BOOT dance** step by step
+8. **Flashes the blink firmware** (optional, Y/n prompt)
+
+The full esptool output from the run is saved to a log file (its path is printed)
+so it can be pasted into a chat when asking for help.
 
 ## The BOOT dance
 
