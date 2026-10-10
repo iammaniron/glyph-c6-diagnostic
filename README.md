@@ -59,6 +59,7 @@ The merged binary produced by the build is the same file committed in
 | Symptom | Fix |
 |---|---|
 | Stuck at `Connecting...` | BOOT dance (the script guides you) |
+| Stuck at `Connecting...` on macOS | Known quirk: macOS's USB-CDC driver often won't run esptool's auto-reset on the C6's native USB port. Use the BOOT dance — or a Windows/Linux machine (auto-reset works there first try) |
 | LED not blinking | Chip may be sitting in download mode from a previous BOOT dance — that's fine, the script can still connect. Tap RESET once to confirm the board still boots normally |
 | Port found but never connects | The port may belong to another device — unplug the board: if the port disappears, it was the board |
 | No serial port listed | Board not plugged in / charge-only cable / try another cable |
