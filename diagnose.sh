@@ -223,6 +223,7 @@ main() {
   refresh_port || exit 1
   ok "Port: $PORT"
   info "If the onboard LED is blinking right now, this port is definitely your board."
+  info "If it's NOT blinking, the chip may be in download mode already — the script can still connect to it."
   check_busy
 
   # 3. connect
